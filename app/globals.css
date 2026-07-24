@@ -1,0 +1,57 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,400..600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap");
+@import "tailwindcss";
+
+:root {
+  --ink: #1c1a17;
+  --bone: #f6f3ec;
+  --plate: #eeeae1;
+  --mauve: #a9806e;
+  --brass: #9c8552;
+  --stone: #8a8479;
+  --line: #d9d3c6;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-bone: var(--bone);
+  --color-plate: var(--plate);
+  --color-mauve: var(--mauve);
+  --color-brass: var(--brass);
+  --color-stone: var(--stone);
+  --color-line: var(--line);
+  --font-display: "Fraunces", serif;
+  --font-sans: "Inter", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+}
+
+body {
+  background: var(--bone);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+.label-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--stone);
+}
+
+.hairline {
+  border-color: var(--line);
+}
+
+input,
+textarea,
+button {
+  color: var(--ink);
+  background-color: transparent;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--stone);
+  opacity: 1;
+}
