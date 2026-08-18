@@ -45,15 +45,25 @@ async function convertHeicIfNeeded(file: File): Promise<File> {
 // every image down to a sane max dimension and re-encode as JPEG before it
 // ever leaves the browser — invisible to the user, and keeps every upload
 // comfortably under the limit while staying plenty sharp for Gemini to read
-// garment detail from.
-const MAX_UPLOAD_DIMENSION = 1600;
-const UPLOAD_JPEG_QUALITY = 0.85;
+// garment detail from. If compression can't hit the target, this throws
+// rather than silently sending an oversized file through.
+const TARGET_MAX_BYTES = 1_200_000; // ~1.2MB per file, leaves headroom for 3 refs + marker + anchor under Vercel's 4.5MB cap
+const COMPRESSION_STEPS: { dimension: number; quality: number }[] = [
+  { dimension: 1600, quality: 0.85 },
+  { dimension: 1400, quality: 0.75 },
+  { dimension: 1200, quality: 0.65 },
+  { dimension: 1000, quality: 0.55 },
+  { dimension: 800, quality: 0.5 },
+];
 
-async function resizeImage(file: File): Promise<File> {
-  const bitmap = await createImageBitmap(file);
+function drawToJpegBlob(
+  bitmap: ImageBitmap,
+  dimension: number,
+  quality: number
+): Promise<Blob | null> {
   let { width, height } = bitmap;
-  if (width > MAX_UPLOAD_DIMENSION || height > MAX_UPLOAD_DIMENSION) {
-    const scale = MAX_UPLOAD_DIMENSION / Math.max(width, height);
+  if (width > dimension || height > dimension) {
+    const scale = dimension / Math.max(width, height);
     width = Math.round(width * scale);
     height = Math.round(height * scale);
   }
@@ -61,14 +71,37 @@ async function resizeImage(file: File): Promise<File> {
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");
-  if (!ctx) return file;
+  if (!ctx) {
+    throw new Error(
+      "This browser couldn't process the image (canvas 2D context unavailable)."
+    );
+  }
   ctx.drawImage(bitmap, 0, 0, width, height);
-  const blob = await new Promise<Blob | null>((resolve) =>
-    canvas.toBlob((b) => resolve(b), "image/jpeg", UPLOAD_JPEG_QUALITY)
-  );
-  if (!blob) return file;
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+}
+
+async function resizeImage(file: File): Promise<File> {
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error(`Couldn't read "${file.name}" as an image. Try a different file.`);
+  }
+
+  let lastBlob: Blob | null = null;
+  for (const step of COMPRESSION_STEPS) {
+    const blob = await drawToJpegBlob(bitmap, step.dimension, step.quality);
+    if (!blob) continue;
+    lastBlob = blob;
+    if (blob.size <= TARGET_MAX_BYTES) break;
+  }
+
+  if (!lastBlob) {
+    throw new Error(`Couldn't compress "${file.name}". Try a different file.`);
+  }
+
   const newName = file.name.replace(/\.\w+$/, "") + ".jpg";
-  return new File([blob], newName, { type: "image/jpeg" });
+  return new File([lastBlob], newName, { type: "image/jpeg" });
 }
 
 // Full pipeline for anything about to be uploaded: convert HEIC if needed,
@@ -120,8 +153,12 @@ export default function Studio() {
         setFiles(next);
         setPreviews(next.map((f) => URL.createObjectURL(f)));
         setResults(null);
-      } catch {
-        setError("Couldn't process one of those photos. Try a different file.");
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Couldn't process one of those photos. Try a different file."
+        );
       } finally {
         setConverting(false);
       }
@@ -145,8 +182,12 @@ export default function Studio() {
       setHemMarkerFile(converted);
       setHemMarkerPreview(URL.createObjectURL(converted));
       setResults(null);
-    } catch {
-      setError("Couldn't process that photo. Try a different file.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Couldn't process that photo. Try a different file."
+      );
     } finally {
       setConverting(false);
     }
@@ -375,23 +416,27 @@ export default function Studio() {
           {previews.length > 0 && (
             <div className="grid grid-cols-3 gap-3 mt-4 max-w-md">
               {previews.map((src, i) => (
-                <div
-                  key={i}
-                  className="relative aspect-[3/4] border hairline bg-plate overflow-hidden group"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={src}
-                    alt={`Reference ${i + 1}`}
-                    className="w-full h-full object-cover"
-                  />
-                  <button
-                    onClick={() => removeFile(i)}
-                    className="absolute top-1 right-1 bg-ink/80 text-bone text-xs w-6 h-6 flex items-center justify-center hover:bg-mauve"
-                    aria-label={`Remove photo ${i + 1}`}
-                  >
-                    ×
-                  </button>
+                <div key={i} className="flex flex-col gap-1">
+                  <div className="relative aspect-[3/4] border hairline bg-plate overflow-hidden group">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={src}
+                      alt={`Reference ${i + 1}`}
+                      className="w-full h-full object-cover"
+                    />
+                    <button
+                      onClick={() => removeFile(i)}
+                      className="absolute top-1 right-1 bg-ink/80 text-bone text-xs w-6 h-6 flex items-center justify-center hover:bg-mauve"
+                      aria-label={`Remove photo ${i + 1}`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  {files[i] && (
+                    <span className="text-xs text-stone font-sans text-center">
+                      {(files[i].size / 1024).toFixed(0)} KB
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
