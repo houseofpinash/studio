@@ -19,7 +19,7 @@ export const maxDuration = 220;
 // measure inches directly from a photo.
 const GARMENT_LENGTH_FRONT_IN = 26;
 
-const BASE_INSTRUCTION =
+const TOP_BASE_INSTRUCTION =
   "You are generating fashion e-commerce photography for a clothing brand, starting from " +
   "1 to 3 casual, non-professional reference photos of ONE garment/outfit, taken on a " +
   "regular phone camera — they may show the outfit laid flat, on a hanger, or worn, from " +
@@ -64,7 +64,7 @@ const BASE_INSTRUCTION =
   "Generate a single new photorealistic image of a professional model wearing this exact " +
   "outfit, shot as clean studio fashion photography with soft, even lighting.";
 
-const SHOTS: { label: string; prompt: string }[] = [
+const TOP_SHOTS: { label: string; prompt: string }[] = [
   {
     label: "Full look — front",
     prompt: `Compose a full-body, front-facing shot. The model stands naturally, and the entire garment is visible from head to toe. This is a SHORT shirt (about ${GARMENT_LENGTH_FRONT_IN}" from shoulder to hem on a standard model) — before finalizing, check that at least 75% of the trouser leg is visible below the hem. If less leg is showing than that, the shirt is drawn too long — shorten it.`,
@@ -85,12 +85,87 @@ const SHOTS: { label: string; prompt: string }[] = [
   },
 ];
 
-const ANCHOR_NOTE =
-  "\n\nIMPORTANT — the LAST attached image is a studio photo already generated earlier in " +
-  "this same shoot, of this same model wearing this same outfit. Treat it as the single " +
-  "source of truth for the top's colour, the trousers' colour, and the fabric rendering — " +
-  "match it exactly, more reliable than the original phone photos. Only the pose/angle " +
-  "should differ, per the instructions below.";
+// Dress variant: no trousers exist for this garment type at all, so every
+// mention of pants/trouser colour, trouser style, and "% of leg visible"
+// is dropped entirely rather than adapted — a dress can legitimately be
+// mini, midi, or floor-length, so there's no single correct proportion to
+// check against; the reference photos (and hem marker, if provided) are
+// the only source of truth for length.
+const DRESS_BASE_INSTRUCTION =
+  "You are generating fashion e-commerce photography for a clothing brand, starting from " +
+  "1 to 3 casual, non-professional reference photos of ONE dress, taken on a regular phone " +
+  "camera — they may show the dress laid flat, on a hanger, or worn, from whatever angles " +
+  "were easiest to capture (there is no fixed order — treat them all as views of the same " +
+  "dress), and the lighting or background may be rough. Cross-reference all the photos " +
+  "provided so details visible in one (e.g. a close-up of embroidery) inform the full-body " +
+  "shots too. This is a DRESS — a single one-piece garment. Do NOT add trousers, pants, or " +
+  "leggings underneath it; the model's legs (or feet, depending on length) should be bare " +
+  "below the hem, exactly as a dress is worn.\n\n" +
+  "Follow these constraints in this exact priority order — if any of them conflict, the " +
+  "one listed first wins:\n\n" +
+  "1. LENGTH (HIGHEST PRIORITY): match the dress length in the reference photos exactly — " +
+  "it may be a mini, midi, or floor-length dress; whichever it is, reproduce that same " +
+  "length precisely, do not shorten or lengthen it. If a HEM MARKER reference image is " +
+  "provided (identified in its own instructions below), it is the single, authoritative, " +
+  "non-negotiable source of truth for hem height — align the generated hem exactly with the " +
+  "marked line's height on the body, overriding every other length cue. Sleeve length (if " +
+  "any) must also be reproduced exactly as shown in the reference photos, never stretched.\n\n" +
+  "2. FABRIC: the dress is linen. Render linen's true visual qualities — a matte, slightly " +
+  "nubby woven texture (not smooth or silky), soft natural creases and gentle structure " +
+  "rather than a fluid drape. Do not render it as silk, satin, or polyester.\n\n" +
+  "3. GARMENT DESIGN: reproduce the cut, embroidery, print and proportions exactly as " +
+  "shown. For any part not visible in any of the photos, infer it naturally and " +
+  "consistently with what is shown.\n\n" +
+  "4. BACKDROP: the exact same warm, soft beige-to-tan seamless studio backdrop in every " +
+  "image, so all 4 shots look like the same session.\n\n" +
+  "Generate a single new photorealistic image of a professional model wearing this exact " +
+  "dress (nothing else on the lower body), shot as clean studio fashion photography with " +
+  "soft, even lighting.";
+
+const DRESS_SHOTS: { label: string; prompt: string }[] = [
+  {
+    label: "Full look — front",
+    prompt:
+      "Compose a full-body, front-facing shot. The model stands naturally, and the entire dress is visible from head to toe (or head to where the hem ends). Match the dress length exactly as shown in the reference photos.",
+  },
+  {
+    label: "Full look — back",
+    prompt:
+      "Compose a full-body back shot. The model stands naturally, showing the back of the dress from head to toe (or head to where the hem ends). Match the dress length exactly as shown in the reference photos.",
+  },
+  {
+    label: "Three-quarter angle",
+    prompt:
+      "Compose a three-quarter angle, full-body shot. The model's arms and hands hang straight and relaxed by her sides (NOT on her hip, NOT crossed) — a simple, natural standing pose that clearly shows the drape and silhouette of the dress.",
+  },
+  {
+    label: "Detail close-up",
+    prompt:
+      "Compose a tight close-up cropped from the shoulder to the waist, still clearly showing the model's body and the dress as worn — not a flat fabric swatch — in sharp focus on the embroidery, print and linen texture of the dress.",
+  },
+];
+
+type GarmentType = "top" | "dress";
+
+function getPromptSet(garmentType: GarmentType) {
+  return garmentType === "dress"
+    ? { baseInstruction: DRESS_BASE_INSTRUCTION, shots: DRESS_SHOTS }
+    : { baseInstruction: TOP_BASE_INSTRUCTION, shots: TOP_SHOTS };
+}
+
+function getAnchorNote(garmentType: GarmentType) {
+  return garmentType === "dress"
+    ? "\n\nIMPORTANT — the LAST attached image is a studio photo already generated earlier in " +
+        "this same shoot, of this same model wearing this same dress. Treat it as the single " +
+        "source of truth for the dress's colour and fabric rendering — match it exactly, more " +
+        "reliable than the original phone photos. Only the pose/angle should differ, per the " +
+        "instructions below."
+    : "\n\nIMPORTANT — the LAST attached image is a studio photo already generated earlier in " +
+        "this same shoot, of this same model wearing this same outfit. Treat it as the single " +
+        "source of truth for the top's colour, the trousers' colour, and the fabric rendering — " +
+        "match it exactly, more reliable than the original phone photos. Only the pose/angle " +
+        "should differ, per the instructions below.";
+}
 
 const HEM_MARKER_NOTE =
   "\n\nHEM MARKER: one of the attached images has a bright coloured line drawn across the " +
@@ -158,6 +233,10 @@ export async function POST(req: NextRequest) {
     typeof houseModelIndexRaw === "string" && houseModelIndexRaw !== ""
       ? Number(houseModelIndexRaw)
       : null;
+  const garmentTypeRaw = form.get("garmentType");
+  const garmentType: GarmentType = garmentTypeRaw === "dress" ? "dress" : "top";
+  const { baseInstruction, shots: SHOTS } = getPromptSet(garmentType);
+  const anchorNote = getAnchorNote(garmentType);
 
   if (files.length === 0) {
     return NextResponse.json(
@@ -201,7 +280,7 @@ export async function POST(req: NextRequest) {
 
     if (anchorPart && !isFrontShot) {
       partsForThisShot = [...partsForThisShot, anchorPart];
-      promptForThisShot += ANCHOR_NOTE;
+      promptForThisShot += anchorNote;
     }
     if (hemMarkerPart) {
       partsForThisShot = [...partsForThisShot, hemMarkerPart];
@@ -215,7 +294,7 @@ export async function POST(req: NextRequest) {
       promptForThisShot += FACE_NOTE;
     }
 
-    const fullPromptText = `${BASE_INSTRUCTION} ${promptForThisShot}${
+    const fullPromptText = `${baseInstruction} ${promptForThisShot}${
       notes ? `\n\nAdditional direction from the brand: ${notes}` : ""
     }`;
 

@@ -120,6 +120,7 @@ export default function Studio() {
 
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
+  const [garmentType, setGarmentType] = useState<"top" | "dress">("top");
   const [hemMarkerFile, setHemMarkerFile] = useState<File | null>(null);
   const [hemMarkerPreview, setHemMarkerPreview] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
@@ -209,6 +210,7 @@ export default function Studio() {
     const form = new FormData();
     files.forEach((f) => form.append("references", f));
     form.append("notes", notes);
+    form.append("garmentType", garmentType);
     if (hemMarkerFile) form.append("hemMarker", hemMarkerFile);
 
     const controller = new AbortController();
@@ -253,6 +255,7 @@ export default function Studio() {
     const form = new FormData();
     files.forEach((f) => form.append("references", f));
     form.append("notes", notes);
+    form.append("garmentType", garmentType);
     form.append("shotIndex", String(index));
     if (hemMarkerFile) form.append("hemMarker", hemMarkerFile);
     if (houseModelIndex !== null) form.append("houseModelIndex", String(houseModelIndex));
@@ -382,10 +385,42 @@ export default function Studio() {
       </header>
 
       <div className="max-w-5xl mx-auto px-6 md:px-10 py-10 flex flex-col gap-10">
+        {/* Garment type */}
+        <section>
+          <p className="label-eyebrow mb-3">Step 01 — Garment type</p>
+          <div className="flex gap-3">
+            <button
+              onClick={() => setGarmentType("top")}
+              className={`border hairline px-5 py-2 text-sm font-sans tracking-wide transition-colors ${
+                garmentType === "top"
+                  ? "bg-ink text-bone"
+                  : "hover:bg-plate/60"
+              }`}
+            >
+              Top + Pants
+            </button>
+            <button
+              onClick={() => setGarmentType("dress")}
+              className={`border hairline px-5 py-2 text-sm font-sans tracking-wide transition-colors ${
+                garmentType === "dress"
+                  ? "bg-ink text-bone"
+                  : "hover:bg-plate/60"
+              }`}
+            >
+              Dress
+            </button>
+          </div>
+          <p className="text-sm text-stone font-sans mt-2">
+            {garmentType === "dress"
+              ? "No trousers will be generated — the dress is the full outfit."
+              : "The model wears trousers matched to the top's colour."}
+          </p>
+        </section>
+
         {/* Upload plate */}
         <section>
           <p className="label-eyebrow mb-3">
-            Step 01 — Reference photos ({files.length}/3)
+            Step 02 — Reference photos ({files.length}/3)
           </p>
           <div
             onClick={() => files.length < 3 && inputRef.current?.click()}
@@ -451,7 +486,7 @@ export default function Studio() {
         {/* Hem marker */}
         <section>
           <p className="label-eyebrow mb-3">
-            Step 02 — Hem length marker (optional, but recommended for accuracy)
+            Step 03 — Hem length marker (optional, but recommended for accuracy)
           </p>
           <p className="text-sm text-stone font-sans mb-3 max-w-xl">
             Draw a bright line across one of your reference photos at the
@@ -496,7 +531,7 @@ export default function Studio() {
 
         {/* Notes */}
         <section>
-          <p className="label-eyebrow mb-3">Step 03 — Direction (optional)</p>
+          <p className="label-eyebrow mb-3">Step 04 — Direction (optional)</p>
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
@@ -544,7 +579,7 @@ export default function Studio() {
         {results && (
           <section>
             <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
-              <p className="label-eyebrow">Step 04 — Results</p>
+              <p className="label-eyebrow">Step 05 — Results</p>
               {results.some((r) => r.dataUrl) && (
                 <button
                   onClick={downloadAllAsZip}
