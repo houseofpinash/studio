@@ -1,29 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
+import { promises as fs } from "fs";
+import path from "path";
+import {
+  InlinePart,
+  fileToInlinePart,
+  dataUrlToInlinePart,
+  generateOneShot,
+  withOverallTimeout,
+  OVERALL_SHOT_TIMEOUT_MS,
+} from "@/lib/gemini";
 
 export const runtime = "nodejs";
 export const maxDuration = 220;
-
-// Tried in order for every shot. If the primary model fails or returns no
-// image, we fall back to the next one. Nano Banana Pro is primary — it
-// handles precise compositional/proportion instructions (like an exact
-// hem-length marker) more reliably than the faster Flash models, which is
-// worth the extra latency for this use case. Kept to 2 models (not 3) so
-// worst-case fallback time stays bounded. Override via env vars.
-const MODEL_CHAIN = [
-  process.env.GEMINI_MODEL || "gemini-3-pro-image",
-  process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash-image",
-].filter((m, i, arr) => arr.indexOf(m) === i); // dedupe if envs repeat a default
 
 // Standing brand spec: this garment is a SHORT shirt, not a tunic/kurta length.
 // GARMENT_LENGTH_FRONT_IN is kept for reference; the prompt itself leans on a
 // visible-leg proportion cue (see BASE_INSTRUCTION) since image models can't
 // measure inches directly from a photo.
 const GARMENT_LENGTH_FRONT_IN = 26;
-
-// HD output: request a higher resolution from models that support it
-// (imageConfig.imageSize). Ignored harmlessly by models that don't.
-const IMAGE_SIZE = process.env.GEMINI_IMAGE_SIZE || "2K"; // "1K" | "2K" | "4K"
-const IMAGE_ASPECT_RATIO = "3:4";
 
 const BASE_INSTRUCTION =
   "You are generating fashion e-commerce photography for a clothing brand, starting from " +
@@ -91,220 +85,6 @@ const SHOTS: { label: string; prompt: string }[] = [
   },
 ];
 
-type InlinePart = { inlineData: { mimeType: string; data: string } };
-type GeminiPart = {
-  text?: string;
-  inlineData?: { mimeType?: string; data?: string };
-};
-
-async function fileToInlinePart(file: File): Promise<InlinePart> {
-  const buf = Buffer.from(await file.arrayBuffer());
-  return {
-    inlineData: {
-      mimeType: file.type || "image/jpeg",
-      data: buf.toString("base64"),
-    },
-  };
-}
-
-function dataUrlToInlinePart(dataUrl: string): InlinePart {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.*)$/);
-  return {
-    inlineData: {
-      mimeType: match?.[1] || "image/png",
-      data: match?.[2] || "",
-    },
-  };
-}
-
-const CALL_TIMEOUT_MS = 30_000;
-
-// gemini-2.5-flash-image (the original Nano Banana) doesn't document support
-// for imageConfig.imageSize/aspectRatio the way the newer models do — sending
-// it anyway risks an internal error on Google's side. Only the newer models
-// get the HD/aspect-ratio config; the older one gets a plain request.
-const MODELS_SUPPORTING_IMAGE_CONFIG = new Set([
-  "gemini-3-pro-image",
-  "gemini-3.1-flash-image",
-]);
-
-async function callModel(
-  apiKey: string,
-  model: string,
-  referenceParts: InlinePart[],
-  promptText: string
-) {
-  const body: {
-    contents: { role: string; parts: unknown[] }[];
-    generationConfig?: { imageConfig: { imageSize: string; aspectRatio: string } };
-  } = {
-    contents: [
-      {
-        role: "user",
-        parts: [...referenceParts, { text: promptText }],
-      },
-    ],
-  };
-
-  if (MODELS_SUPPORTING_IMAGE_CONFIG.has(model)) {
-    body.generationConfig = {
-      imageConfig: {
-        imageSize: IMAGE_SIZE,
-        aspectRatio: IMAGE_ASPECT_RATIO,
-      },
-    };
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
-
-  let res: Response;
-  try {
-    res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": apiKey,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      }
-    );
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(
-        `${model} timed out after ${CALL_TIMEOUT_MS / 1000}s (no response).`
-      );
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`${model} error (${res.status}): ${errText.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  const candidate = data?.candidates?.[0];
-  const parts: GeminiPart[] = candidate?.content?.parts || [];
-  const imagePart = parts.find((p) => p.inlineData?.data);
-
-  if (!imagePart?.inlineData?.data) {
-    const textPart = parts.find((p) => p.text)?.text;
-    const finishReason = candidate?.finishReason;
-    const promptFeedback = data?.promptFeedback?.blockReason;
-    const safetyRatings = candidate?.safetyRatings
-      ?.filter((r: { probability?: string }) => r.probability && r.probability !== "NEGLIGIBLE")
-      ?.map((r: { category?: string; probability?: string }) => `${r.category}:${r.probability}`)
-      ?.join(", ");
-
-    const diagnostics = [
-      finishReason ? `finishReason=${finishReason}` : null,
-      promptFeedback ? `blockReason=${promptFeedback}` : null,
-      safetyRatings ? `safety=[${safetyRatings}]` : null,
-    ]
-      .filter(Boolean)
-      .join(" ");
-
-    throw new Error(
-      textPart ||
-        (diagnostics
-          ? `${model} returned no image (${diagnostics}).`
-          : `${model} returned no image. Raw response: ${JSON.stringify(data).slice(0, 500)}`)
-    );
-  }
-
-  return `data:${imagePart.inlineData.mimeType || "image/png"};base64,${imagePart.inlineData.data}`;
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isTransientError(err: Error) {
-  return (
-    /\b503\b/.test(err.message) ||
-    /UNAVAILABLE/i.test(err.message) ||
-    /\b500\b/.test(err.message) ||
-    /\bINTERNAL\b/i.test(err.message) ||
-    /IMAGE_OTHER/i.test(err.message) ||
-    /finishReason=OTHER\b/i.test(err.message)
-  );
-}
-
-const MAX_TRANSIENT_RETRIES = 1;
-const TRANSIENT_RETRY_DELAY_MS = 2500;
-
-// Tries each model in MODEL_CHAIN in order, returning the first success.
-// For a transient error (503 / "high demand"), retries the SAME model a
-// couple of times with a short delay before moving on to the next model —
-// these spikes are usually brief, so a short wait often just works.
-// If every model fails, throws the last error (prefixed with which models
-// were attempted) so the UI can show something useful.
-async function generateOneShot(
-  apiKey: string,
-  referenceParts: InlinePart[],
-  shotPrompt: string,
-  notes: string
-) {
-  const promptText = `${BASE_INSTRUCTION} ${shotPrompt}${
-    notes ? `\n\nAdditional direction from the brand: ${notes}` : ""
-  }`;
-
-  let lastError: Error | null = null;
-  for (const model of MODEL_CHAIN) {
-    for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
-      try {
-        const dataUrl = await callModel(apiKey, model, referenceParts, promptText);
-        return { dataUrl, modelUsed: model };
-      } catch (err) {
-        const errorObj =
-          err instanceof Error ? err : new Error("Generation failed.");
-        lastError = errorObj;
-        if (isTransientError(errorObj) && attempt < MAX_TRANSIENT_RETRIES) {
-          await sleep(TRANSIENT_RETRY_DELAY_MS);
-          continue;
-        }
-        break; // not transient, or out of retries — move to next model
-      }
-    }
-  }
-  throw new Error(
-    `All models failed (tried ${MODEL_CHAIN.join(", ")}). Last error: ${
-      lastError?.message
-    }`
-  );
-}
-
-// A hard ceiling on total time for one shot's generation — across every
-// model and every retry combined. Even with 2 models x 2 attempts x 30s
-// each, this stops any single shot from silently running past ~100s; if
-// it's exceeded, the shot is marked failed and the app moves on rather
-// than continuing to wait.
-const OVERALL_SHOT_TIMEOUT_MS = 100_000;
-
-function withOverallTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${ms / 1000}s overall.`));
-    }, ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      }
-    );
-  });
-}
-
 const ANCHOR_NOTE =
   "\n\nIMPORTANT — the LAST attached image is a studio photo already generated earlier in " +
   "this same shoot, of this same model wearing this same outfit. Treat it as the single " +
@@ -319,6 +99,37 @@ const HEM_MARKER_NOTE =
   "falls. Measure the generated garment's hem against this marked line's height (relative to " +
   "the body, e.g. relative to the hip/waistband) and reproduce that exact height. This " +
   "overrides any percentage or fraction guidance elsewhere in these instructions.";
+
+const FACE_NOTE =
+  "\n\nHOUSE MODEL FACE: one of the attached images shows the exact person (face, skin tone, " +
+  "hair) who must appear in this generated photo — this is a fixed brand model, not a random " +
+  "choice. Use her face and general likeness precisely as shown in that reference photo. Do " +
+  "not blend it with a different face or invent a new one; do not change her ethnicity, skin " +
+  "tone, or facial features. Only her pose and the garment she's wearing should differ from " +
+  "that reference.";
+
+// The 3 fixed "house model" portraits live as static files, generated once
+// via /api/generate-house-models and committed to the repo. One is picked
+// at random for every fresh full run, then reused for the rest of that
+// batch (and its regenerates) so the same person appears throughout.
+const HOUSE_MODEL_COUNT = 3;
+
+async function loadHouseModelPart(index: number): Promise<InlinePart | null> {
+  try {
+    const filePath = path.join(
+      process.cwd(),
+      "public",
+      "house-models",
+      `model-${index + 1}.jpg`
+    );
+    const buf = await fs.readFile(filePath);
+    return { inlineData: { mimeType: "image/jpeg", data: buf.toString("base64") } };
+  } catch {
+    // No house model files yet (not generated/committed) — generation still
+    // works fine without one, just without a fixed face.
+    return null;
+  }
+}
 
 export async function POST(req: NextRequest) {
   const rawApiKey = process.env.GEMINI_API_KEY;
@@ -342,6 +153,11 @@ export async function POST(req: NextRequest) {
       : null;
   const anchorFile = form.get("anchorImage");
   const hemMarkerFile = form.get("hemMarker");
+  const houseModelIndexRaw = form.get("houseModelIndex");
+  const requestedHouseModelIndex =
+    typeof houseModelIndexRaw === "string" && houseModelIndexRaw !== ""
+      ? Number(houseModelIndexRaw)
+      : null;
 
   if (files.length === 0) {
     return NextResponse.json(
@@ -376,6 +192,7 @@ export async function POST(req: NextRequest) {
     referenceParts: InlinePart[],
     anchorPart: InlinePart | null,
     hemMarkerPart: InlinePart | null,
+    houseModelPart: InlinePart | null,
     notes: string
   ): Promise<ShotResult> {
     const isFrontShot = shot.label === SHOTS[0].label;
@@ -390,10 +207,21 @@ export async function POST(req: NextRequest) {
       partsForThisShot = [...partsForThisShot, hemMarkerPart];
       promptForThisShot += HEM_MARKER_NOTE;
     }
+    // Only attach the house-model face reference when there's no anchor yet
+    // (the anchor image, once it exists, already carries the chosen face
+    // forward — attaching both would just be redundant).
+    if (houseModelPart && !anchorPart) {
+      partsForThisShot = [...partsForThisShot, houseModelPart];
+      promptForThisShot += FACE_NOTE;
+    }
+
+    const fullPromptText = `${BASE_INSTRUCTION} ${promptForThisShot}${
+      notes ? `\n\nAdditional direction from the brand: ${notes}` : ""
+    }`;
 
     try {
       const { dataUrl, modelUsed } = await withOverallTimeout(
-        generateOneShot(apiKey, partsForThisShot, promptForThisShot, notes),
+        generateOneShot(apiKey, partsForThisShot, fullPromptText),
         OVERALL_SHOT_TIMEOUT_MS,
         shot.label
       );
@@ -407,34 +235,43 @@ export async function POST(req: NextRequest) {
   try {
     const referenceParts = await Promise.all(files.map(fileToInlinePart));
 
-    // An anchor image (a previously generated shot of the same outfit) is used
-    // as an extra reference for every shot after the front, so pants/top colour
-    // and fabric stay consistent across the set instead of each shot re-guessing
-    // independently from the original phone photos. It comes either from the
-    // front shot generated just below, or (for a single-shot regenerate) from
-    // the client.
     let anchorPart: InlinePart | null =
       anchorFile instanceof File ? await fileToInlinePart(anchorFile) : null;
     const hemMarkerPart: InlinePart | null =
       hemMarkerFile instanceof File ? await fileToInlinePart(hemMarkerFile) : null;
 
+    // Pick (or reuse) which of the 3 fixed house-model faces to use for this
+    // request. A fresh full run always rolls a new random one; a regenerate
+    // reuses whichever index the client tells us was used for the rest of
+    // the current on-screen set, so the face stays consistent within a batch.
+    const houseModelIndex =
+      requestedHouseModelIndex !== null &&
+      requestedHouseModelIndex >= 0 &&
+      requestedHouseModelIndex < HOUSE_MODEL_COUNT
+        ? requestedHouseModelIndex
+        : Math.floor(Math.random() * HOUSE_MODEL_COUNT);
+    const houseModelPart = await loadHouseModelPart(houseModelIndex);
+
     let results: ShotResult[];
 
     if (shotIndex !== null) {
-      // Single-shot regenerate — just run the one requested shot.
       results = [
-        await runShot(shotsToRun[0], referenceParts, anchorPart, hemMarkerPart, notes),
+        await runShot(
+          shotsToRun[0],
+          referenceParts,
+          anchorPart,
+          hemMarkerPart,
+          houseModelPart,
+          notes
+        ),
       ];
     } else {
-      // Full run: front generates first (it's the anchor), then back,
-      // three-quarter, and detail all run in parallel against it — they
-      // only depend on the front shot, not on each other, so there's no
-      // need to make them wait in a line.
       const frontResult = await runShot(
         SHOTS[0],
         referenceParts,
         null,
         hemMarkerPart,
+        houseModelPart,
         notes
       );
       if (frontResult.dataUrl) {
@@ -443,14 +280,14 @@ export async function POST(req: NextRequest) {
 
       const restResults = await Promise.all(
         SHOTS.slice(1).map((shot) =>
-          runShot(shot, referenceParts, anchorPart, hemMarkerPart, notes)
+          runShot(shot, referenceParts, anchorPart, hemMarkerPart, houseModelPart, notes)
         )
       );
 
       results = [frontResult, ...restResults];
     }
 
-    return NextResponse.json({ images: results });
+    return NextResponse.json({ images: results, houseModelIndex });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Generation failed.";
     return NextResponse.json({ error: message }, { status: 502 });

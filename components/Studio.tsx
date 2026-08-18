@@ -127,6 +127,7 @@ export default function Studio() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [error, setError] = useState("");
   const [results, setResults] = useState<ResultImage[] | null>(null);
+  const [houseModelIndex, setHouseModelIndex] = useState<number | null>(null);
   const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(
     null
   );
@@ -224,6 +225,9 @@ export default function Studio() {
         setError(data.error || "Generation failed.");
       } else {
         setResults(data.images);
+        setHouseModelIndex(
+          typeof data.houseModelIndex === "number" ? data.houseModelIndex : null
+        );
       }
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
@@ -251,6 +255,7 @@ export default function Studio() {
     form.append("notes", notes);
     form.append("shotIndex", String(index));
     if (hemMarkerFile) form.append("hemMarker", hemMarkerFile);
+    if (houseModelIndex !== null) form.append("houseModelIndex", String(houseModelIndex));
 
     // Anchor to the front shot (if it exists) so colour/fabric stays
     // consistent with the rest of the set, same as a full run does.
