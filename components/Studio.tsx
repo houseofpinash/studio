@@ -11,6 +11,33 @@ type ResultImage = {
   modelUsed?: string | null;
 };
 
+function isHeicFile(file: File): boolean {
+  const type = file.type.toLowerCase();
+  return (
+    type === "image/heic" ||
+    type === "image/heif" ||
+    /\.hei[cf]$/i.test(file.name)
+  );
+}
+
+// HEIC/HEIF (the default format on iPhones) can't be previewed by <img> in
+// Chrome/Edge and isn't a safe bet to send to Gemini either — convert it to
+// a normal JPEG right at upload time, invisibly. heic2any is loaded lazily
+// (it's a sizeable WASM-backed library) only when a HEIC file actually shows
+// up, so everyone else's upload experience is unaffected.
+async function convertHeicIfNeeded(file: File): Promise<File> {
+  if (!isHeicFile(file)) return file;
+  const heic2any = (await import("heic2any")).default;
+  const converted = await heic2any({
+    blob: file,
+    toType: "image/jpeg",
+    quality: 0.9,
+  });
+  const blob = Array.isArray(converted) ? converted[0] : converted;
+  const newName = file.name.replace(/\.hei[cf]$/i, ".jpg");
+  return new File([blob], newName || "photo.jpg", { type: "image/jpeg" });
+}
+
 export default function Studio() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -38,14 +65,25 @@ export default function Studio() {
     return () => clearInterval(interval);
   }, [loading]);
 
+  const [converting, setConverting] = useState(false);
+
   const addFiles = useCallback(
-    (incoming: FileList | null) => {
+    async (incoming: FileList | null) => {
       if (!incoming || incoming.length === 0) return;
-      const next = [...files, ...Array.from(incoming)].slice(0, 3);
-      setFiles(next);
-      setPreviews(next.map((f) => URL.createObjectURL(f)));
-      setResults(null);
+      setConverting(true);
       setError("");
+      try {
+        const picked = Array.from(incoming).slice(0, 3 - files.length);
+        const converted = await Promise.all(picked.map(convertHeicIfNeeded));
+        const next = [...files, ...converted].slice(0, 3);
+        setFiles(next);
+        setPreviews(next.map((f) => URL.createObjectURL(f)));
+        setResults(null);
+      } catch {
+        setError("Couldn't process one of those photos. Try a different file.");
+      } finally {
+        setConverting(false);
+      }
     },
     [files]
   );
@@ -56,13 +94,21 @@ export default function Studio() {
     setPreviews(next.map((f) => URL.createObjectURL(f)));
   }
 
-  function setHemMarker(incoming: FileList | null) {
+  async function setHemMarker(incoming: FileList | null) {
     const picked = incoming?.[0];
     if (!picked) return;
-    setHemMarkerFile(picked);
-    setHemMarkerPreview(URL.createObjectURL(picked));
-    setResults(null);
+    setConverting(true);
     setError("");
+    try {
+      const converted = await convertHeicIfNeeded(picked);
+      setHemMarkerFile(converted);
+      setHemMarkerPreview(URL.createObjectURL(converted));
+      setResults(null);
+    } catch {
+      setError("Couldn't process that photo. Try a different file.");
+    } finally {
+      setConverting(false);
+    }
   }
 
   function removeHemMarker() {
@@ -269,17 +315,18 @@ export default function Studio() {
             <input
               ref={inputRef}
               type="file"
-              accept="image/*"
+              accept="image/*,.heic,.heif"
               multiple
               hidden
               onChange={(e) => addFiles(e.target.files)}
             />
             <p className="font-display text-lg text-ink mb-1">
-              Drop 1 to 3 quick phone photos of the outfit here
+              {converting ? "Converting photo…" : "Drop 1 to 3 quick phone photos of the outfit here"}
             </p>
             <p className="text-sm text-stone font-sans">
               Regular camera clicks are fine — any angles you have (front,
-              back, a close-up). 4 different model shots come out.
+              back, a close-up), iPhone HEIC photos included. 4 different
+              model shots come out.
             </p>
           </div>
 
@@ -344,7 +391,7 @@ export default function Studio() {
               <input
                 ref={hemMarkerInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/*,.heic,.heif"
                 hidden
                 onChange={(e) => setHemMarker(e.target.files)}
               />
