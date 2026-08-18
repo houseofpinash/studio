@@ -32,29 +32,29 @@ export default function AdminPage() {
     }
   }
 
-  function download(dataUrl: string, index: number) {
+  function download(dataUrl: string, label: string) {
     const a = document.createElement("a");
     a.href = dataUrl;
-    a.download = `model-${index + 1}.jpg`;
+    a.download = `${label.toLowerCase().replace(/\s+/g, "-")}.jpg`;
     a.click();
   }
 
   return (
     <main className="min-h-screen bg-bone px-6 md:px-10 py-10">
-      <div className="max-w-4xl mx-auto flex flex-col gap-8">
+      <div className="max-w-6xl mx-auto flex flex-col gap-8">
         <div>
           <p className="label-eyebrow mb-2">One-time setup</p>
           <h1 className="font-display text-3xl text-ink mb-3">
-            Generate the 3 house models
+            Choose the house models
           </h1>
           <p className="text-sm text-stone font-sans max-w-2xl">
-            This generates 3 distinct model portraits once. Download each one,
-            save them into <code>public/house-models/</code> as{" "}
-            <code>model-1.jpg</code>, <code>model-2.jpg</code>, and{" "}
-            <code>model-3.jpg</code>, then commit and push. Every future
-            generation will randomly pick one of these 3 for the whole
-            photoshoot, so the same person appears consistently across all 4
-            shots.
+            Generates 10 varied portrait candidates at once so you can browse
+            and pick the ones you actually like. Download your 3 favourites,
+            rename them <code>model-1.jpg</code>, <code>model-2.jpg</code>, and{" "}
+            <code>model-3.jpg</code>, place them in{" "}
+            <code>public/house-models/</code>, then commit and push. Not
+            happy with any of these? Just generate again for a fresh batch —
+            nothing is saved until you download and commit it.
           </p>
         </div>
 
@@ -63,13 +63,13 @@ export default function AdminPage() {
           disabled={loading}
           className="bg-ink text-bone font-sans text-sm tracking-wide px-8 py-3 hover:bg-mauve transition-colors disabled:opacity-40 disabled:cursor-not-allowed w-fit"
         >
-          {loading ? "Generating 3 portraits…" : "Generate 3 house models"}
+          {loading ? "Generating 10 portraits…" : "Generate 10 portraits"}
         </button>
 
         {error && <p className="text-sm font-sans text-[#8a3b2e]">{error}</p>}
 
         {results && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
             {results.map((r, i) => (
               <div key={i} className="border hairline bg-plate/40">
                 <div className="aspect-[3/4] bg-plate flex items-center justify-center overflow-hidden">
@@ -81,19 +81,17 @@ export default function AdminPage() {
                       className="w-full h-full object-cover"
                     />
                   ) : (
-                    <p className="text-sm text-[#8a3b2e] font-sans px-4 text-center">
+                    <p className="text-xs text-[#8a3b2e] font-sans px-3 text-center">
                       {r.error || "Failed"}
                     </p>
                   )}
                 </div>
-                <div className="flex items-center justify-between px-4 py-3">
-                  <span className="label-eyebrow">
-                    model-{i + 1}.jpg
-                  </span>
+                <div className="flex items-center justify-between px-3 py-2">
+                  <span className="text-xs font-sans text-stone">{r.label}</span>
                   {r.dataUrl && (
                     <button
-                      onClick={() => download(r.dataUrl!, i)}
-                      className="text-sm font-sans underline decoration-line underline-offset-4 hover:text-mauve"
+                      onClick={() => download(r.dataUrl!, r.label)}
+                      className="text-xs font-sans underline decoration-line underline-offset-4 hover:text-mauve"
                     >
                       Download
                     </button>
