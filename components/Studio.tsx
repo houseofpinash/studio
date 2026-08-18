@@ -38,6 +38,47 @@ async function convertHeicIfNeeded(file: File): Promise<File> {
   return new File([blob], newName || "photo.jpg", { type: "image/jpeg" });
 }
 
+// Vercel's serverless functions hard-cap request bodies at 4.5MB — not
+// adjustable via any setting. Phone camera photos are commonly several MB
+// each, and with up to 3 reference photos + a hem marker + (on regenerate)
+// a full 2K generated anchor image, that limit is easy to blow past. Resize
+// every image down to a sane max dimension and re-encode as JPEG before it
+// ever leaves the browser — invisible to the user, and keeps every upload
+// comfortably under the limit while staying plenty sharp for Gemini to read
+// garment detail from.
+const MAX_UPLOAD_DIMENSION = 1600;
+const UPLOAD_JPEG_QUALITY = 0.85;
+
+async function resizeImage(file: File): Promise<File> {
+  const bitmap = await createImageBitmap(file);
+  let { width, height } = bitmap;
+  if (width > MAX_UPLOAD_DIMENSION || height > MAX_UPLOAD_DIMENSION) {
+    const scale = MAX_UPLOAD_DIMENSION / Math.max(width, height);
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return file;
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob((b) => resolve(b), "image/jpeg", UPLOAD_JPEG_QUALITY)
+  );
+  if (!blob) return file;
+  const newName = file.name.replace(/\.\w+$/, "") + ".jpg";
+  return new File([blob], newName, { type: "image/jpeg" });
+}
+
+// Full pipeline for anything about to be uploaded: convert HEIC if needed,
+// then resize/compress. Runs on reference photos, the hem marker, and the
+// anchor image used for single-shot regenerates.
+async function processUpload(file: File): Promise<File> {
+  const heicConverted = await convertHeicIfNeeded(file);
+  return resizeImage(heicConverted);
+}
+
 export default function Studio() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -74,7 +115,7 @@ export default function Studio() {
       setError("");
       try {
         const picked = Array.from(incoming).slice(0, 3 - files.length);
-        const converted = await Promise.all(picked.map(convertHeicIfNeeded));
+        const converted = await Promise.all(picked.map(processUpload));
         const next = [...files, ...converted].slice(0, 3);
         setFiles(next);
         setPreviews(next.map((f) => URL.createObjectURL(f)));
@@ -100,7 +141,7 @@ export default function Studio() {
     setConverting(true);
     setError("");
     try {
-      const converted = await convertHeicIfNeeded(picked);
+      const converted = await processUpload(picked);
       setHemMarkerFile(converted);
       setHemMarkerPreview(URL.createObjectURL(converted));
       setResults(null);
@@ -176,12 +217,13 @@ export default function Studio() {
       try {
         const anchorRes = await fetch(results[0].dataUrl);
         const anchorBlob = await anchorRes.blob();
-        form.append(
-          "anchorImage",
-          new File([anchorBlob], "anchor-front.png", {
-            type: anchorBlob.type || "image/png",
-          })
-        );
+        const anchorFile = new File([anchorBlob], "anchor-front.png", {
+          type: anchorBlob.type || "image/png",
+        });
+        // The generated shot is 2K — resize it down like everything else
+        // before it goes back over the wire, or it alone can blow past
+        // Vercel's 4.5MB request body limit.
+        form.append("anchorImage", await resizeImage(anchorFile));
       } catch {
         // If this fails for any reason, just proceed without an anchor.
       }
